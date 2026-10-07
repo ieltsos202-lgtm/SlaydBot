@@ -19,7 +19,7 @@ async def main(url: str) -> None:
     await db.init()
     src = sqlite3.connect(config.DB_PATH)
     src.row_factory = sqlite3.Row
-    conn = await asyncpg.connect(db._pg_dsn(url))
+    conn = await asyncpg.connect(db._pg_dsn(url), statement_cache_size=0)
     try:
         for table in TABLES:
             rows = src.execute(f"SELECT * FROM {table}").fetchall()
