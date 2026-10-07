@@ -131,7 +131,8 @@ async def init() -> None:
     global _pool
     if config.DATABASE_URL:
         import asyncpg
-        _pool = await asyncpg.create_pool(_pg_dsn(config.DATABASE_URL), min_size=1, max_size=5,
+        _pool = await asyncpg.create_pool(_pg_dsn(config.DATABASE_URL), min_size=0, max_size=5,
+                                          max_inactive_connection_lifetime=60,
                                           statement_cache_size=0)
     else:
         os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
