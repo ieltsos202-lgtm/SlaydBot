@@ -54,7 +54,7 @@ async def cancel(message: Message, state: FSMContext):
 async def hand_start(message: Message, state: FSMContext):
     await state.clear()
     pending.pop(message.from_user.id, None)
-    has_pack = hw.load_pack(message.from_user.id) is not None
+    has_pack = await db.load_hand_pack(message.from_user.id) is not None
     await state.set_state(Hand.method)
     await message.answer(
         "✍️ <b>Yozma ish — sizning yozuvingizda</b>\n\n"
@@ -263,7 +263,7 @@ async def confirm_ok(call: CallbackQuery, state: FSMContext):
         await call.answer("Sessiya eskirgan, qaytadan boshlang", show_alert=True)
         await state.clear()
         return
-    await asyncio.to_thread(hw.save_pack, call.from_user.id, pack)
+    await hw.save_pack(call.from_user.id, pack)
     await call.answer("Saqlandi ✅")
     await call.message.edit_reply_markup(reply_markup=None)
     await ask_topic(call.message, state)
@@ -276,7 +276,7 @@ async def confirm_redo(call: CallbackQuery, state: FSMContext):
     await call.message.edit_reply_markup(reply_markup=None)
     await state.set_state(Hand.method)
     await call.message.answer("Usulni tanlang 👇",
-                              reply_markup=kb.hand_method_kb(hw.load_pack(call.from_user.id) is not None))
+                              reply_markup=kb.hand_method_kb(await db.load_hand_pack(call.from_user.id) is not None))
 
 
 @router.message(Hand.topic, F.text, ~F.text.startswith("/"), ~F.text.in_(MENU_TEXTS))
@@ -327,7 +327,7 @@ async def generate(message: Message, user_id: int, state: FSMContext, bot: Bot):
     await state.clear()
     topic, pages, lang = data["topic"], data["pages"], data["lang"]
     paper, ink = data.get("paper", "katak"), data.get("ink", "auto")
-    pack = hw.load_pack(user_id)
+    pack = await hw.load_pack(user_id)
     if not pack:
         await message.answer("Yozuvingiz topilmadi, qaytadan yuklang.", reply_markup=kb.main_menu)
         return

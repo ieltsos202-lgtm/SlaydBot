@@ -7,12 +7,29 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
+from aiohttp import web
 
 import config
 import db
 import handlers_admin
 import handlers_hand
 import handlers_user
+
+
+async def health(_request: web.Request) -> web.Response:
+    return web.Response(text="ok")
+
+
+async def start_health_server() -> None:
+    port = os.getenv("PORT")
+    if not port:
+        return
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(port)).start()
+    logging.info("Health server: %s-port", port)
 
 
 async def main() -> None:
@@ -28,6 +45,7 @@ async def main() -> None:
     dp.include_router(handlers_admin.router)
     dp.include_router(handlers_hand.router)
     dp.include_router(handlers_user.router)
+    await start_health_server()
     await bot.set_my_commands([BotCommand(command="start", description="Bosh menyu")])
     me = await bot.get_me()
     logging.info("Bot ishga tushdi: @%s", me.username)

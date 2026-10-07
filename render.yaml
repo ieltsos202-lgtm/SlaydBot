@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: slaydbot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: CARD_NUMBER
+        sync: false
+      - key: CARD_OWNER
+        sync: false
+      - key: UNLIMITED_IDS
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-flash-latest
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-flash-lite-latest
+      - key: MAX_PARALLEL_JOBS
+        value: "2"

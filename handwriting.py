@@ -5,6 +5,7 @@ Ikki rejim:
 - "font": erkin rasm bo'yicha AI tanlagan qo'lyozma shrift + foydalanuvchi uslubi (qiyalik, qalinlik...).
 Har ikkala holatda har bir harf har safar biroz o'zgartirib (masshtab, burilish, elastik deformatsiya) chiziladi.
 """
+import asyncio
 import gzip
 import io
 import math
@@ -18,9 +19,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import config
+import db
 
 FONT_DIR = os.path.join(config.BASE_DIR, "assets", "fonts")
-HAND_DIR = os.path.join(config.BASE_DIR, "data", "hand")
 STD_XH = 48
 
 FONTS = {
@@ -418,25 +419,22 @@ def make_source(pack: dict):
 
 # ---------------------------------------------------------------- storage
 
-def pack_path(user_id: int) -> str:
-    return os.path.join(HAND_DIR, f"{user_id}.pkl.gz")
-
-
-def save_pack(user_id: int, pack: dict) -> str:
-    os.makedirs(HAND_DIR, exist_ok=True)
+def dump_pack(pack: dict) -> bytes:
     pack = dict(pack, saved_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-    path = pack_path(user_id)
-    with gzip.open(path, "wb") as f:
-        pickle.dump(pack, f)
-    return path
+    return gzip.compress(pickle.dumps(pack))
 
 
-def load_pack(user_id: int) -> dict | None:
-    path = pack_path(user_id)
-    if not os.path.exists(path):
-        return None
-    with gzip.open(path, "rb") as f:
-        return pickle.load(f)
+def parse_pack(data: bytes) -> dict:
+    return pickle.loads(gzip.decompress(data))
+
+
+async def save_pack(user_id: int, pack: dict) -> None:
+    await db.save_hand_pack(user_id, await asyncio.to_thread(dump_pack, pack))
+
+
+async def load_pack(user_id: int) -> dict | None:
+    data = await db.load_hand_pack(user_id)
+    return await asyncio.to_thread(parse_pack, data) if data else None
 
 
 # ---------------------------------------------------------------- variation

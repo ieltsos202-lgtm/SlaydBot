@@ -5,6 +5,8 @@ import random
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+import config
+import db
 import handwriting as hw
 
 
@@ -77,8 +79,21 @@ def test_font_pack_render_and_capacity():
         assert hw.capacity_words(pack, "katak") > 40
 
 
-def test_pack_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setattr(hw, "HAND_DIR", str(tmp_path))
-    hw.save_pack(5, {"kind": "font", "font": "caveat"})
-    assert hw.load_pack(5)["font"] == "caveat"
-    assert hw.load_pack(6) is None
+async def test_pack_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setattr(config, "DATABASE_URL", "")
+    await db.init()
+    pack, _ = build_pack()
+    await hw.save_pack(5, pack)
+    await hw.save_pack(5, {"kind": "font", "font": "caveat"})
+    assert (await hw.load_pack(5))["font"] == "caveat"
+    await hw.save_pack(7, pack)
+    assert set((await hw.load_pack(7))["glyphs"]) == set(pack["glyphs"])
+    assert await hw.load_pack(6) is None
+
+
+def test_pg_sql_translation():
+    assert db.pg_sql("SELECT * FROM users WHERE id=? AND x=?") == "SELECT * FROM users WHERE id=$1 AND x=$2"
+    assert db.pg_sql("INSERT INTO payments (a) VALUES (?)").endswith("VALUES ($1) RETURNING id")
+    schema = db.pg_sql(db.SCHEMA)
+    assert "BIGSERIAL PRIMARY KEY" in schema and "BYTEA" in schema and "INTEGER" not in schema

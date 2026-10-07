@@ -42,4 +42,5 @@ MAX_PARALLEL_JOBS = int(os.getenv("MAX_PARALLEL_JOBS", "4"))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.getenv("DB_PATH", os.path.join(BASE_DIR, "data", "bot.db"))
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 TMP_DIR = os.path.join(BASE_DIR, "data", "tmp")
