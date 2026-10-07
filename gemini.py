@@ -19,6 +19,8 @@ LANG_NAMES = {
 
 
 log = logging.getLogger(__name__)
+_cooldown: dict[tuple[str, str], float] = {}
+COOLDOWN_SECONDS = 300
 
 
 class GeminiError(Exception):
@@ -51,15 +53,23 @@ def _source_block(source: str) -> str:
     return f"\n\nMANBA (Wikipedia, faktlarni tekshirish uchun):\n\"\"\"\n{source}\n\"\"\"\n" if source else ""
 
 
+def _candidates() -> list[tuple[str, str]]:
+    models = [config.GEMINI_MODEL] + [m for m in config.GEMINI_FALLBACK_MODELS if m != config.GEMINI_MODEL]
+    pairs = [(m, k) for m in models for k in config.GEMINI_API_KEYS]
+    now = time.time()
+    fresh = [p for p in pairs if _cooldown.get(p, 0) <= now]
+    return fresh or pairs
+
+
 async def _call(parts: list[dict], temperature: float = 0.6) -> dict:
-    if not config.GEMINI_API_KEY:
+    if not config.GEMINI_API_KEYS:
         raise GeminiError("GEMINI_API_KEY sozlanmagan")
-    headers = {"x-goog-api-key": config.GEMINI_API_KEY, "Content-Type": "application/json"}
     timeout = aiohttp.ClientTimeout(total=240)
     last_error = "noma'lum xato"
-    models = [config.GEMINI_MODEL] + [m for m in config.GEMINI_FALLBACK_MODELS if m != config.GEMINI_MODEL]
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        for model in models:
+        for model, key in _candidates():
+            headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+            key_no = config.GEMINI_API_KEYS.index(key) + 1
             url = URL.format(model=model)
             use_thinking = bool(config.GEMINI_THINKING)
             attempt = 0
@@ -79,16 +89,20 @@ async def _call(parts: list[dict], temperature: float = 0.6) -> dict:
                             parts_out = candidates[0].get("content", {}).get("parts", [])
                             text = "".join(p.get("text", "") for p in parts_out)
                             usage = data.get("usageMetadata", {})
-                            log.info("Gemini %s ok in %.1fs (thinking=%s, out=%s, think=%s)", model,
-                                     time.time() - started, use_thinking, usage.get("candidatesTokenCount"),
+                            log.info("Gemini %s (key %d) ok in %.1fs (thinking=%s, out=%s, think=%s)", model,
+                                     key_no, time.time() - started, use_thinking, usage.get("candidatesTokenCount"),
                                      usage.get("thoughtsTokenCount"))
                             return _parse_json(text)
                         last_error = f"{model} HTTP {resp.status}: {str(data)[:300]}"
-                        log.warning("Gemini %s failed in %.1fs: %s", model, time.time() - started, last_error[:160])
+                        log.warning("Gemini %s (key %d) failed in %.1fs: %s", model, key_no,
+                                    time.time() - started, last_error[:160])
                         if resp.status == 400 and use_thinking and "thinking" in str(data).lower():
                             use_thinking = False
                             continue
-                        if resp.status in (400, 401, 403):
+                        if resp.status in (401, 403, 429) or "API_KEY" in str(data):
+                            _cooldown[(model, key)] = time.time() + COOLDOWN_SECONDS
+                            break
+                        if resp.status == 400:
                             raise GeminiError(last_error)
                         break
                 except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:

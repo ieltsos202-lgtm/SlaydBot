@@ -21,6 +21,7 @@ def _packages(raw: str) -> dict[int, int]:
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEYS = [k.strip() for k in GEMINI_API_KEY.split(",") if k.strip()]
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv(
     "GEMINI_FALLBACK_MODELS", "gemini-flash-lite-latest").split(",") if m.strip()]
