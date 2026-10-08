@@ -80,6 +80,25 @@ def test_build_docx(tmp_path):
     assert "ВВЕДЕНИЕ" in text and "1. Bo'lim" in text
 
 
+def test_parse_amount():
+    import gemini
+    assert gemini.parse_amount(5000) == 5000
+    assert gemini.parse_amount("5 000,00 so'm") == 5000
+    assert gemini.parse_amount("12,000.00") == 12000
+    assert gemini.parse_amount("35.000") == 35000
+    assert gemini.parse_amount(None) is None
+    assert gemini.card_matches({"card_last4": "9860 16** **** 3004"}, "9860160144093004")
+
+
+def test_package_for_amount(monkeypatch):
+    import handlers_user
+    monkeypatch.setattr(config, "PACKAGES", {1: 5000, 3: 12000, 10: 35000})
+    assert handlers_user.package_for_amount(12000) == (3, 12000)
+    assert handlers_user.package_for_amount(20000) == (3, 12000)
+    assert handlers_user.package_for_amount(4000) is None
+    assert handlers_user.package_for_amount(None) is None
+
+
 def test_safe_filename():
     assert docs.safe_filename('a/b:c*"?', "pptx") == "abc.pptx"
     assert docs.safe_filename("///", "docx") == "hujjat.docx"

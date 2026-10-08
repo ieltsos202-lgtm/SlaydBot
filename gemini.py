@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
@@ -212,11 +213,31 @@ Faqat JSON qaytar: {{"title": "qisqa sarlavha", "paragraphs": ["abzats", "..."]}
     return {"title": str(data.get("title") or topic).strip(), "paragraphs": paras}
 
 
+def parse_amount(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = re.sub(r"[^\d.,]", "", str(value))
+    s = re.sub(r"[.,]\d{1,2}$", "", s)
+    s = re.sub(r"[.,]", "", s)
+    return int(s) if s else None
+
+
+def card_matches(data: dict, card: str) -> bool:
+    return re.sub(r"\D", "", str(data.get("card_last4") or ""))[-4:] == re.sub(r"\D", "", card)[-4:]
+
+
 async def verify_receipt(image: bytes, mime: str, expected_amount: int, card: str) -> dict:
     last4 = re.sub(r"\D", "", card)[-4:]
+    today = datetime.now(timezone(timedelta(hours=5))).strftime("%d.%m.%Y")
     prompt = f"""Rasmda bank/to'lov ilovasidagi (Click, Payme, Uzum, bank ilovasi va h.k.)
 o'tkazma cheki bormi tekshir. Kutilgan: kamida {expected_amount} so'm, qabul qiluvchi karta
-oxirgi 4 raqami {last4}. Rasm tahrirlangan/soxta ko'rinsa confidence "low" qil.
+oxirgi 4 raqami {last4}.
+MUHIM: bugungi sana {today} (Toshkent vaqti). Chekdagi sana bugun yoki so'nggi kunlar bo'lsa bu NORMAL,
+yil sababli chekni shubhali deb hisoblama. Tranzaksiya raqamining ko'rinishi ham shubha sababi emas.
+Confidence "low" faqat aniq tahrir/montaj izlari bo'lsa (shrift yoki fon nomuvofiqligi, ustidan yozilgan
+raqamlar), o'tkazma muvaffaqiyatsiz bo'lsa yoki rasm chek bo'lmasa qo'yiladi.
 Faqat JSON qaytar:
 {{"is_receipt": true/false, "success": true/false, "amount": son yoki null,
   "card_last4": "1234" yoki null, "transaction_id": "matn" yoki null,
@@ -226,12 +247,8 @@ Faqat JSON qaytar:
         {"inline_data": {"mime_type": mime, "data": base64.b64encode(image).decode()}},
     ]
     data = await _call(parts, temperature=0.0)
-    amount = data.get("amount")
-    try:
-        amount = int(float(str(amount).replace(" ", "").replace(",", ""))) if amount is not None else None
-    except ValueError:
-        amount = None
-    card_ok = (data.get("card_last4") or "")[-4:] == last4
+    amount = parse_amount(data.get("amount"))
+    card_ok = card_matches(data, card)
     data["amount"] = amount
     data["ok"] = bool(
         data.get("is_receipt") and data.get("success") and amount is not None

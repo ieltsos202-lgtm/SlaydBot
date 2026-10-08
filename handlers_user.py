@@ -276,8 +276,15 @@ async def notify_admins(bot: Bot, file_id: str, text: str, payment_id: int | Non
             log.exception("Admin notify failed: %s", admin_id)
 
 
+def package_for_amount(amount: int | None) -> tuple[int, int] | None:
+    fits = [(c, p) for c, p in config.PACKAGES.items() if amount is not None and p <= amount]
+    return max(fits, key=lambda cp: cp[1]) if fits else None
+
+
 @router.message(Pay.receipt, F.photo | F.document)
+@router.message(StateFilter(None), F.photo)
 async def receipt(message: Message, state: FSMContext, bot: Bot):
+    chosen = await state.get_state() == Pay.receipt.state
     if message.photo:
         tg_file = message.photo[-1]
         mime = "image/jpeg"
@@ -289,7 +296,10 @@ async def receipt(message: Message, state: FSMContext, bot: Bot):
         return
 
     data = await state.get_data()
-    credits, price = data["credits"], data["price"]
+    if chosen:
+        credits, price = data["credits"], data["price"]
+    else:
+        credits, price = min(config.PACKAGES.items(), key=lambda cp: cp[1])
     await state.clear()
     checking = await message.answer("🔎 Chek tekshirilmoqda...", reply_markup=kb.main_menu)
 
@@ -303,6 +313,12 @@ async def receipt(message: Message, state: FSMContext, bot: Bot):
         result = await gemini.verify_receipt(buf.read(), mime, price, config.CARD_NUMBER)
     except Exception:
         log.exception("Receipt check failed")
+
+    if not chosen:
+        if result and not result.get("is_receipt"):
+            await checking.edit_text("Quyidagi menyudan tanlang 👇")
+            return
+        credits, price = package_for_amount(result.get("amount")) or (credits, price)
 
     tx = result.get("transaction_id")
     if tx and await db.receipt_used(tg_file.file_unique_id, str(tx)):

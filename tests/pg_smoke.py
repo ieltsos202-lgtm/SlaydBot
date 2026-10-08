@@ -21,7 +21,7 @@ async def main(url: str) -> None:
         assert (await db.get_user(TEST_ID))["credits"] == start + 2
         pid = await db.create_payment(TEST_ID, 5000, 1, "f", f"smoke-{TEST_ID}", None, "smoke")
         payment, _ = await db.approve_payment(pid)
-        assert payment and payment["status"] == "pending" or payment["user_id"] == TEST_ID
+        assert payment["user_id"] == TEST_ID
         assert (await db.get_payment(pid))["status"] == "approved"
         await db.log_order(TEST_ID, "hand", "smoke", 1, "uz", "done")
         await hw.save_pack(TEST_ID, {"kind": "font", "font": "marck"})
