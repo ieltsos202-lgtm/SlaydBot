@@ -228,19 +228,31 @@ def card_matches(data: dict, card: str) -> bool:
     return re.sub(r"\D", "", str(data.get("card_last4") or ""))[-4:] == re.sub(r"\D", "", card)[-4:]
 
 
-async def verify_receipt(image: bytes, mime: str, expected_amount: int, card: str) -> dict:
+def _letters(s: str) -> str:
+    return re.sub(r"[^a-zа-яё]", "", s.lower())
+
+
+def owner_matches(data: dict, owner: str) -> bool:
+    got = _letters(str(data.get("recipient_name") or ""))
+    words = [_letters(w) for w in owner.split()]
+    return bool(got) and any(len(w) >= 3 and w in got for w in words)
+
+
+async def verify_receipt(image: bytes, mime: str, expected_amount: int, card: str, owner: str = "") -> dict:
     last4 = re.sub(r"\D", "", card)[-4:]
     today = datetime.now(timezone(timedelta(hours=5))).strftime("%d.%m.%Y")
     prompt = f"""Rasmda bank/to'lov ilovasidagi (Click, Payme, Uzum, bank ilovasi va h.k.)
 o'tkazma cheki bormi tekshir. Kutilgan: kamida {expected_amount} so'm, qabul qiluvchi karta
-oxirgi 4 raqami {last4}.
+oxirgi 4 raqami {last4}{f', qabul qiluvchi: {owner}' if owner else ''}.
+"card_last4" — QABUL QILUVCHI (oluvchi) kartasining oxirgi 4 raqami, to'lovchi kartasi emas.
+"recipient_name" — chekda ko'rsatilgan qabul qiluvchi ismi (bo'lsa).
 MUHIM: bugungi sana {today} (Toshkent vaqti). Chekdagi sana bugun yoki so'nggi kunlar bo'lsa bu NORMAL,
 yil sababli chekni shubhali deb hisoblama. Tranzaksiya raqamining ko'rinishi ham shubha sababi emas.
 Confidence "low" faqat aniq tahrir/montaj izlari bo'lsa (shrift yoki fon nomuvofiqligi, ustidan yozilgan
 raqamlar), o'tkazma muvaffaqiyatsiz bo'lsa yoki rasm chek bo'lmasa qo'yiladi.
 Faqat JSON qaytar:
 {{"is_receipt": true/false, "success": true/false, "amount": son yoki null,
-  "card_last4": "1234" yoki null, "transaction_id": "matn" yoki null,
+  "card_last4": "1234" yoki null, "recipient_name": "matn" yoki null, "transaction_id": "matn" yoki null,
   "confidence": "high"|"medium"|"low", "reason": "qisqa izoh"}}"""
     parts = [
         {"text": prompt},
@@ -248,10 +260,15 @@ Faqat JSON qaytar:
     ]
     data = await _call(parts, temperature=0.0)
     amount = parse_amount(data.get("amount"))
-    card_ok = card_matches(data, card)
     data["amount"] = amount
-    data["ok"] = bool(
-        data.get("is_receipt") and data.get("success") and amount is not None
-        and amount >= expected_amount and card_ok and data.get("confidence") != "low"
-    )
+    checks = {
+        "chek emas": data.get("is_receipt"),
+        "o'tkazma muvaffaqiyatsiz": data.get("success"),
+        f"summa {amount} < {expected_amount}": amount is not None and amount >= expected_amount,
+        f"karta {data.get('card_last4')} / {data.get('recipient_name')} mos emas":
+            card_matches(data, card) or (owner and owner_matches(data, owner)),
+        "ishonch past": data.get("confidence") != "low",
+    }
+    data["failed"] = [name for name, passed in checks.items() if not passed]
+    data["ok"] = not data["failed"]
     return data

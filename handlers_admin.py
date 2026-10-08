@@ -1,5 +1,7 @@
 import asyncio
+import html
 import logging
+import os
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
@@ -31,8 +33,22 @@ async def admin_stats(message: Message):
         f"⏳ Kutilayotgan to'lovlar: <b>{s['pending']}</b>\n\n"
         "Buyruqlar:\n"
         "/add <code>user_id soni</code> — kredit qo'shish\n"
-        "/broadcast — xabarga reply qilib yuboring, hammaga tarqatiladi"
+        "/broadcast — xabarga reply qilib yuboring, hammaga tarqatiladi\n"
+        "/logs — so'nggi xatolar va ogohlantirishlar"
     )
+
+
+@router.message(Command("logs"))
+async def admin_logs(message: Message):
+    path = os.path.join(config.BASE_DIR, "data", "bot.log")
+    if not os.path.exists(path):
+        await message.answer("Log fayl topilmadi.")
+        return
+    with open(path, encoding="utf-8", errors="replace") as f:
+        lines = [ln.rstrip() for ln in f if " WARNING " in ln or " ERROR " in ln or "Traceback" in ln
+                 or ln.startswith(("  ", "gemini.", "aiogram.")) or "Error" in ln]
+    text = "\n".join(ln[:300] for ln in lines[-25:]) or "Xato yo'q ✅"
+    await message.answer(f"<pre>{html.escape(text[-3800:])}</pre>")
 
 
 @router.message(Command("add"))

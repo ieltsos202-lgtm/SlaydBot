@@ -88,6 +88,9 @@ def test_parse_amount():
     assert gemini.parse_amount("35.000") == 35000
     assert gemini.parse_amount(None) is None
     assert gemini.card_matches({"card_last4": "9860 16** **** 3004"}, "9860160144093004")
+    assert gemini.owner_matches({"recipient_name": "FAYZULLO X."}, "Fayzullo Xasanov")
+    assert not gemini.owner_matches({"recipient_name": "Anvar K."}, "Fayzullo Xasanov")
+    assert not gemini.owner_matches({"recipient_name": None}, "Fayzullo Xasanov")
 
 
 def test_package_for_amount(monkeypatch):

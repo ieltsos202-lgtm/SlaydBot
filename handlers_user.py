@@ -310,12 +310,13 @@ async def receipt(message: Message, state: FSMContext, bot: Bot):
     result: dict = {}
     try:
         buf = await bot.download(tg_file.file_id)
-        result = await gemini.verify_receipt(buf.read(), mime, price, config.CARD_NUMBER)
-    except Exception:
+        result = await gemini.verify_receipt(buf.read(), mime, price, config.CARD_NUMBER, config.CARD_OWNER)
+    except Exception as e:
         log.exception("Receipt check failed")
+        result = {"error": f"{type(e).__name__}: {e}"[:200]}
 
     if not chosen:
-        if result and not result.get("is_receipt"):
+        if "is_receipt" in result and not result["is_receipt"]:
             await checking.edit_text("Quyidagi menyudan tanlang 👇")
             return
         credits, price = package_for_amount(result.get("amount")) or (credits, price)
@@ -326,6 +327,10 @@ async def receipt(message: Message, state: FSMContext, bot: Bot):
         return
 
     note = f"AI: {result.get('reason', 'tekshirilmadi')} | summa={result.get('amount')} | ishonch={result.get('confidence')}"
+    if result.get("failed"):
+        note += f" | o'tmadi: {', '.join(result['failed'])}"
+    if result.get("error"):
+        note += f" | XATO: {result['error']}"
     payment_id = await db.create_payment(
         message.from_user.id, price, credits, tg_file.file_id, tg_file.file_unique_id,
         str(tx) if tx else None, note)
