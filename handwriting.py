@@ -81,7 +81,7 @@ def _load(image_bytes: bytes) -> np.ndarray:
 
 
 def _ink_map(rgb: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    gray = rgb.max(axis=2).astype(np.float32)
     small = cv2.resize(gray, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
     k = max(9, (min(small.shape) // 25) | 1)
     bg = cv2.morphologyEx(small, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
@@ -99,17 +99,26 @@ def _threshold(ink: np.ndarray) -> float:
     return float(np.clip(otsu / 255, 0.28, 0.62))
 
 
+def _strip_rulings(ink: np.ndarray) -> np.ndarray:
+    """Katak/chiziqli daftar chiziqlarini ink xaritasidan ayiradi.
+    Chiziq — sahifa bo'ylab uzluksiz cho'zilgan belgi; harf shtrixlari qisqa.
+    Uzun morphological opening faqat bunday chiziqlarni ajratib oladi."""
+    h, w = ink.shape
+    kh = max(50, w // 10)
+    kv = max(50, h // 10)
+    hz = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (kh, 1)))
+    vt = cv2.morphologyEx(ink, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, kv)))
+    rul = np.maximum(hz, vt)
+    return np.clip(ink - 1.6 * rul, 0, 1)
+
+
 def _binary(ink: np.ndarray) -> np.ndarray:
     u8 = (ink * 255).astype(np.uint8)
     bw = (u8 > int(_threshold(ink) * 255)).astype(np.uint8)
-    h, w = bw.shape
-    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(30, w // 25), 1)))
-    lines |= cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(30, h // 25))))
-    lines = cv2.dilate(lines, np.ones((3, 3), np.uint8))
-    clean = bw & (1 - lines)
+    clean = cv2.morphologyEx(bw, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     repaired = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, np.ones((5, 3), np.uint8))
-    clean |= repaired & lines & bw
-    return cv2.morphologyEx(clean, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    clean |= repaired & bw
+    return clean
 
 
 def _deskew_angle(bw: np.ndarray) -> float:
@@ -183,12 +192,19 @@ def _units(bw: np.ndarray) -> tuple[list[_Unit], np.ndarray, float]:
     if len(raw) < 5:
         raise HandwritingError("Rasmda yozuv topilmadi")
     heights = np.array([r[4] for r in raw])
-    big = heights[heights >= np.percentile(heights, 50)]
-    mh = float(np.median(big))
+    plausible = heights[(heights >= 10) & (heights <= 0.2 * bw.shape[0])]
+    if plausible.size >= 20:
+        big = plausible[plausible >= np.percentile(plausible, 40)]
+        mh = float(np.median(big))
+    else:
+        big = heights[heights >= np.percentile(heights, 50)]
+        mh = float(np.median(big))
     units = []
     for i, x, y, w, h, area in raw:
         if max(w, h) < 0.08 * mh or h > 4.5 * mh or w > 8 * mh:
             continue
+        if min(w, h) <= 4 and max(w, h) >= 6 * min(w, h):
+            continue  # qolgan chiziq bo'lagi (juda ingichka)
         units.append(_Unit(i, x, y, x + w, y + h))
     units.sort(key=lambda u: u.x0)
     parent = list(range(len(units)))
@@ -228,20 +244,77 @@ def _lines(units: list[_Unit], mh: float) -> list[list[_Unit]]:
         else:
             rows.append([u])
     rows = [sorted(r, key=lambda u: u.x0) for r in rows]
-    return [r for r in rows if len(r) >= 2 or (r and r[0].h > 0.5 * mh)]
+    rows = [r for r in rows if len(r) >= 2 or (r and r[0].h > 0.5 * mh)]
+    # Katak bo'laklari: mediana balandligi juda kichik qatorlarni ajratamiz,
+    # lekin tashlamaymiz — vergul/nuqta kabi kichik belgilar shu yerda bo'lishi mumkin.
+    def is_extra(r: list[_Unit]) -> bool:
+        hs = sorted(u.h for u in r)
+        med_hi = np.median(hs[len(hs) // 2:])  # bo'laklar aralashsa ham yuqori yarmi harf
+        ws = sorted(min(u.x1 - u.x0, u.h) for u in r)
+        med_w = np.median(ws[len(ws) // 2:])
+        return med_hi < 0.45 * mh or med_w < 0.15 * mh
+
+    real, extras = [], []
+    for r in rows:
+        (extras if is_extra(r) else real).append(r)
+    return real, extras
 
 
-def _fit_count(row: list[_Unit], n: int) -> list[_Unit] | None:
+def _fit_count(row: list[_Unit], n: int, bw: np.ndarray | None = None) -> list[_Unit] | None:
     row = list(row)
     while len(row) > n:
         gaps = [row[i + 1].x0 - row[i].x1 for i in range(len(row) - 1)]
         i = int(np.argmin(gaps))
         row[i].absorb(row[i + 1])
         row.pop(i + 1)
-    return row if len(row) == n else None
+    # Kam belgi: qoʻshilib ketgan belgilarni eng sust ustun boʻyicha boʻlamiz
+    if bw is not None:
+        guard = 0
+        while len(row) < n and guard < 4 * n:
+            guard += 1
+            widths = np.array([u.x1 - u.x0 for u in row])
+            if widths.max() < 1.6 * np.median(widths):
+                break  # hech qaysi birlik aniq qoʻshilmagan
+            i = int(widths.argmax())
+            u = row[i]
+            w_i = u.x1 - u.x0
+            x_lo = u.x0 + int(0.2 * w_i)
+            x_hi = u.x1 - int(0.2 * w_i)
+            if x_hi - x_lo < 2:
+                break
+            colsum = bw[u.y0:u.y1, x_lo:x_hi].sum(axis=0)
+            cut = x_lo + int(np.argmin(colsum))
+            if cut <= u.x0 or cut >= u.x1:
+                break
+            left = _Unit(u.labels[0], u.x0, u.y0, cut, u.y1)
+            left.labels = list(u.labels)
+            right = _Unit(u.labels[0], cut, u.y0, u.x1, u.y1)
+            right.labels = list(u.labels)
+            row[i:i + 1] = [left, right]
+            row.sort(key=lambda q: q.x0)
+    if len(row) == n:
+        return row
+    if len(row) >= 0.5 * n:
+        # Qisman fit: belgilar orasidagi o'rtacha qadamdan indekslab,
+        # yo'q slotlar uchun None qoldiramiz (keyin font fallback ishlaydi)
+        steps = [row[i + 1].x0 - row[i].x0 for i in range(len(row) - 1)
+                 if row[i + 1].x0 > row[i].x0]
+        if not steps:
+            return None
+        step = float(np.median(steps))
+        if step <= 0:
+            return None
+        fitted: list[_Unit | None] = [None] * n
+        for u in row:
+            idx = int(round((u.x0 - row[0].x0) / step))
+            if 0 <= idx < n and fitted[idx] is None:
+                fitted[idx] = u
+        if sum(u is not None for u in fitted) >= 0.6 * n:
+            return fitted
+    return None
 
 
-def _align(expected: list[list[str]], rows: list[list[_Unit]]) -> list[tuple[list[str], list[_Unit]]]:
+def _align(expected: list[list[str]], rows: list[list[_Unit]], mh: float) -> list[tuple[list[str], list[_Unit]]]:
     """Order-preserving alignment of template lines to detected rows (DP)."""
     E, D = len(expected), len(rows)
     INF = 10 ** 9
@@ -260,6 +333,11 @@ def _align(expected: list[list[str]], rows: list[list[_Unit]]) -> list[tuple[lis
             if i < E and j < D:
                 diff = len(rows[j]) - len(expected[i])
                 m = c + (abs(diff) if diff >= 0 else 3 * -diff)
+                hs = sorted(u.h for u in rows[j])
+                ws = sorted(min(u.x1 - u.x0, u.h) for u in rows[j])
+                if (np.median(hs[len(hs) // 2:]) < 0.45 * mh
+                        or np.median(ws[len(ws) // 2:]) < 0.15 * mh):
+                    m += 5 * len(expected[i])
                 if m < cost[i + 1][j + 1]:
                     cost[i + 1][j + 1], back[i + 1][j + 1] = m, (i, j, "match")
     pairs, i, j = [], E, D
@@ -280,26 +358,61 @@ def _plausible(ch: str, top: float, bottom: float) -> bool:
     return h <= 2.6
 
 
+def rng_colors(i: int):
+    rng = np.random.default_rng(i + 7)
+    return rng.integers(60, 255, 3)
+
+
 def extract_template(image_bytes: bytes, page_index: int) -> tuple[dict, dict]:
     """Shablon rasmidan glyphlarni ajratadi. Qaytaradi: (glyphs, info)."""
     page = TEMPLATE_PAGES[page_index]
     rgb = _load(image_bytes)
     ink = _ink_map(rgb)
-    angle = _deskew_angle((ink > _threshold(ink)).astype(np.uint8))
+    ink_d = _strip_rulings(ink)
+    angle = _deskew_angle((ink_d > _threshold(ink_d)).astype(np.uint8))
     if abs(angle) >= 0.25:
-        rgb, ink = _rotate(rgb, angle), _rotate(ink, angle)
-    bw = _binary(ink)
+        rgb, ink, ink_d = _rotate(rgb, angle), _rotate(ink, angle), _rotate(ink_d, angle)
+    bw = _binary(ink_d)
     units, labels, mh = _units(bw)
-    rows = _lines(units, mh)
+    rows, extras = _lines(units, mh)
+    if os.getenv("HW_DEBUG"):
+        dbg = cv2.cvtColor((bw * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        for i, row in enumerate(rows):
+            color = tuple(int(c) for c in rng_colors(i))
+            for u in row:
+                cv2.rectangle(dbg, (u.x0, u.y0), (u.x1, u.y1), color, 2)
+        dbg_dir = os.path.join(os.path.dirname(__file__), "tests")
+        os.makedirs(dbg_dir, exist_ok=True)
+        cv2.imwrite(os.path.join(dbg_dir, "dbg_bw.png"), dbg)
+        cv2.imwrite(os.path.join(dbg_dir, "dbg_ink.png"), (ink * 255).astype(np.uint8))
+        print(f"DBG angle={angle} threshold={_threshold(ink):.2f} mh={mh:.0f} "
+              f"units={len(units)} rows={len(rows)}")
     expected = [line.split() for line in page["lines"]]
-    pairs = _align(expected, rows)
+    pairs = _align(expected, rows, mh)
 
     assigned = []
     for chars, row in pairs:
-        fitted = _fit_count(row, len(chars))
+        # Kichik belgilarni (vergul, nuqta) faqat qator kamlik qilganda tortib olamiz —
+        # aks holda katak bo'laklari harflarga yopishib buzadi
+        if len(row) < len(chars):
+            y_lo = min(u.y0 for u in row) - 0.3 * mh
+            y_hi = max(u.y1 for u in row) + 0.6 * mh
+            x_lo, x_hi = min(u.x0 for u in row) - 4 * mh, max(u.x1 for u in row) + 4 * mh
+            for ex in list(extras):
+                for u in list(ex):
+                    if y_lo <= u.cy <= y_hi and x_lo <= u.cx <= x_hi:
+                        row.append(u)
+                        ex.remove(u)
+            row.sort(key=lambda u: u.x0)
+        fitted = _fit_count(row, len(chars), bw)
         if fitted:
             assigned.append((chars, fitted))
-    xh_samples = [u.h for chars, row in assigned for ch, u in zip(chars, row) if ch in XH_SET]
+        elif os.getenv("HW_DEBUG"):
+            widths = [u.x1 - u.x0 for u in row]
+            print(f"DBG fit fail: need {len(chars)} got {len(row)} "
+                  f"y={int(np.mean([u.cy for u in row]))} w={widths}")
+    xh_samples = [u.h for chars, row in assigned for ch, u in zip(chars, row)
+                  if u is not None and ch in XH_SET]
     if len(xh_samples) < 3:
         raise HandwritingError("Harflar aniqlanmadi. Rasm tiniq, yorug' va to'g'ri olinganiga ishonch hosil qiling.")
     xh = float(np.median(xh_samples))
@@ -308,14 +421,17 @@ def extract_template(image_bytes: bytes, page_index: int) -> tuple[dict, dict]:
     glyphs: dict[str, list] = {}
     bad = 0
     for chars, row in assigned:
-        base_pts = [(u.cx, u.y1) for ch, u in zip(chars, row) if ch not in NO_BASE]
+        base_pts = [(u.cx, u.y1) for ch, u in zip(chars, row)
+                    if u is not None and ch not in NO_BASE]
         if len(base_pts) >= 3:
             xs, ys = np.array(base_pts).T
             slope, icpt = np.polyfit(xs, ys, 1)
         else:
-            slope, icpt = 0.0, float(np.median([u.y1 for u in row]))
+            slope, icpt = 0.0, float(np.median([u.y1 for u in row if u is not None]))
         line_glyphs = []
         for ch, u in zip(chars, row):
+            if u is None:
+                continue
             base = slope * u.cx + icpt
             top, bottom = (u.y0 - base) / xh, (u.y1 - base) / xh
             if not _plausible(ch, top, bottom):
